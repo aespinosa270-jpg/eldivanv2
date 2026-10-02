@@ -10,7 +10,13 @@ export async function POST(request: Request) {
     if (required.some((key) => typeof body[key] !== "string" || !body[key].trim()) || !Number.isFinite(Number(body.price)) || !Number.isFinite(Number(body.year)) || !Number.isFinite(Number(body.stock)) || Number(body.stock) < 0) {
       return NextResponse.json({ error: "Revisa los campos obligatorios y el precio/año." }, { status: 400 });
     }
-    const validImage = (value: unknown) => value === undefined || value === "" || (typeof value === "string" && /^\/uploads\/books\/[0-9a-f-]+\.(?:jpg|png|webp)$/.test(value));
+    const validImage = (value: unknown) => {
+      if (value === undefined || value === "") return true;
+      if (typeof value !== "string") return false;
+      if (/^\/uploads\/books\/[0-9a-f-]+\.(?:jpg|png|webp)$/.test(value)) return true;
+      try { const imageUrl = new URL(value); return imageUrl.protocol === "https:" && /^[a-z0-9-]+\.public\.blob\.vercel-storage\.com$/i.test(imageUrl.hostname); }
+      catch { return false; }
+    };
     if (!validImage(body.coverImage) || !Array.isArray(body.productImages ?? []) || (body.productImages ?? []).length > 4 || !(body.productImages ?? []).every(validImage)) {
       return NextResponse.json({ error: "Revisa las imágenes de portada y producto." }, { status: 400 });
     }

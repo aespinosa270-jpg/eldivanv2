@@ -3,6 +3,7 @@ import "server-only";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { neon } from "@neondatabase/serverless";
 import { books as initialBooks } from "@/data/books";
 import type { Book } from "@/lib/types";
 
@@ -49,6 +50,7 @@ type Store = { books: Book[]; orders: AdminOrder[]; restockRequests: RestockRequ
 const defaultSiteSettings: SiteSettings = { promotion: { enabled: false, eyebrow: "PROMOCIÓN", title: "Una buena lectura te espera", description: "Explora novedades y títulos seleccionados por El Diván.", buttonLabel: "Ver catálogo", href: "/catalogo", palette: "navy" }, hero: { title: "El psicoanálisis tiene una biblioteca.", description: "Encuentra libros por etapa del desarrollo, tema clínico, orientación teórica, autor o editorial.", accent: "beige" } };
 
 const storePath = path.join(process.cwd(), "data", "admin-store.json");
+const storeTable = "eldivan_app_store";
 const demoOrders: AdminOrder[] = [
   { id: "ED-1048", customer: "Mariana López", email: "mariana@example.com", date: "2026-10-01", total: 1000, paymentStatus: "Pagado", status: "Procesando", tracking: "", carrier: "", address: "Roma Norte, Ciudad de México", items: [{ bookId: "1", title: "Nacemos para siempre", quantity: 1, unitPrice: 480 }, { bookId: "2", title: "Adolescencia, cuerpo y alimentación", quantity: 1, unitPrice: 520 }] },
   { id: "ED-1047", customer: "Diego Ramírez", email: "diego@example.com", date: "2026-09-30", total: 610, paymentStatus: "Pagado", status: "Enviado", tracking: "99MX1047821", carrier: "Estafeta", address: "Centro, Guadalajara, Jalisco", items: [{ bookId: "3", title: "Autismo y clínica infantil", quantity: 1, unitPrice: 610 }] },
@@ -56,18 +58,50 @@ const demoOrders: AdminOrder[] = [
   { id: "ED-1045", customer: "Sofía Castillo", email: "sofia@example.com", date: "2026-09-27", total: 390, paymentStatus: "Pagado", status: "Entregado", tracking: "99MX1045119", carrier: "DHL", address: "Condesa, Ciudad de México", items: [{ bookId: "5", title: "Duelo y pérdida", quantity: 1, unitPrice: 390 }] },
 ];
 
+function createInitialStore(includeDemoOrders: boolean): Store {
+  return { books: initialBooks, orders: includeDemoOrders ? demoOrders : [], restockRequests: [], coupons: [], promotionCoupons: [], accounts: [], siteSettings: defaultSiteSettings, posts: [], subscribers: [], campaigns: [], carts: [] };
+}
+
+async function ensureDatabaseStore(): Promise<Store> {
+  const sql = neon(process.env.DATABASE_URL!);
+  await sql`CREATE TABLE IF NOT EXISTS eldivan_app_store (id text PRIMARY KEY, payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`;
+  const existing = await sql`SELECT payload FROM eldivan_app_store WHERE id = 'main' LIMIT 1`;
+  if (existing[0]) return (typeof existing[0].payload === "string" ? JSON.parse(existing[0].payload) : existing[0].payload) as Store;
+
+  // Production starts with the catalog but never copies demo orders/customers into the live shop.
+  const initial = createInitialStore(false);
+  await sql`INSERT INTO eldivan_app_store (id, payload) VALUES ('main', ${JSON.stringify(initial)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+  const seeded = await sql`SELECT payload FROM eldivan_app_store WHERE id = 'main' LIMIT 1`;
+  const payload = seeded[0]?.payload;
+  if (!payload) throw new Error("No se pudo inicializar el almacenamiento de la tienda.");
+  return (typeof payload === "string" ? JSON.parse(payload) : payload) as Store;
+}
+
 async function ensureStore(): Promise<Store> {
+  if (process.env.DATABASE_URL) return ensureDatabaseStore();
+  // Vercel Functions do not provide a persistent writable project filesystem.
+  // Keep the storefront renderable while storage is being connected, but never pretend writes succeeded.
+  if (process.env.VERCEL) return createInitialStore(false);
   await mkdir(path.dirname(storePath), { recursive: true });
   try { return JSON.parse(await readFile(storePath, "utf8")) as Store; }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const initial: Store = { books: initialBooks, orders: demoOrders, restockRequests: [], coupons: [], promotionCoupons: [], accounts: [], siteSettings: defaultSiteSettings, posts: [], subscribers: [], campaigns: [], carts: [] };
+    const initial = createInitialStore(true);
     await writeFile(storePath, JSON.stringify(initial, null, 2), "utf8");
     return initial;
   }
 }
 
-async function save(store: Store) { await writeFile(storePath, JSON.stringify(store, null, 2), "utf8"); }
+async function save(store: Store) {
+  if (process.env.DATABASE_URL) {
+    const sql = neon(process.env.DATABASE_URL);
+    await sql`CREATE TABLE IF NOT EXISTS eldivan_app_store (id text PRIMARY KEY, payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`;
+    await sql`INSERT INTO eldivan_app_store (id, payload, updated_at) VALUES ('main', ${JSON.stringify(store)}::jsonb, now()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
+    return;
+  }
+  if (process.env.VERCEL) throw new Error("Conecta Postgres a Vercel para guardar cambios de la tienda.");
+  await writeFile(storePath, JSON.stringify(store, null, 2), "utf8");
+}
 function migrateStore(store: Store): Store {
   store.restockRequests ||= [];
   store.coupons ||= [];

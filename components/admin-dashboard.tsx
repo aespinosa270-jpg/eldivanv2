@@ -73,9 +73,9 @@ function BookEditor({book,onClose,onSaved}:{book:Book|null;onClose:()=>void;onSa
     if(!files?.length)return;
     const selected=Array.from(files).slice(0,target==="cover"?1:4-productImages.length);
     if(!selected.length){setError("La galería admite hasta 4 fotos.");return;}
-    const form=new FormData(); selected.forEach(file=>form.append("files",file)); setUploading(true); setError("");
-    try { const response=await fetch("/api/admin/uploads",{method:"POST",body:form}); const result=await response.json(); if(!response.ok)throw new Error(result.error||"No se pudieron subir las imágenes.");
-      if(target==="cover")setCoverImage(result.urls[0]); else setProductImages(current=>[...current,...result.urls].slice(0,4));
+    setUploading(true); setError("");
+    try { const uploaded:string[]=[]; for(const file of selected){const form=new FormData();form.append("files",file);const response=await fetch("/api/admin/uploads",{method:"POST",body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||"No se pudieron subir las imágenes.");uploaded.push(...result.urls);}
+      if(target==="cover")setCoverImage(uploaded[0]); else setProductImages(current=>[...current,...uploaded].slice(0,4));
     } catch(cause) { setError(cause instanceof Error?cause.message:"No se pudieron subir las imágenes."); }
     finally {setUploading(false);}
   }
